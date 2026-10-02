@@ -31,29 +31,66 @@ impl Camera {
     pub fn orbit(&mut self, yaw: f32, pitch: f32) {
         self.yaw += yaw;
         self.pitch += pitch;
-
         self.pitch = self.pitch.clamp(-1.3, 1.3);
     }
 
     pub fn zoom(&mut self, amount: f32) {
-        self.distance = (self.distance + amount).clamp(3.0, 45.0);
+        self.distance = (self.distance + amount).clamp(1.2, 45.0);
     }
 
     pub fn get_ray(&self, x: usize, y: usize, width: usize, height: usize) -> Ray {
         let eye = self.position();
 
         let forward = (self.target - eye).normalize();
+
         let right = forward.cross(&Vec3::new(0.0, 1.0, 0.0)).normalize();
+
         let up = right.cross(&forward).normalize();
 
         let aspect = width as f32 / height as f32;
 
-        let px = (2.0 * (x as f32 + 0.5) / width as f32 - 1.0) * aspect * (self.fov / 2.0).tan();
+        let fov_scale = (self.fov / 2.0).tan();
 
-        let py = (1.0 - 2.0 * (y as f32 + 0.5) / height as f32) * (self.fov / 2.0).tan();
+        let px = (2.0 * (x as f32 + 0.5) / width as f32 - 1.0) * aspect * fov_scale;
+
+        let py = (1.0 - 2.0 * (y as f32 + 0.5) / height as f32) * fov_scale;
 
         let direction = (forward + right * px + up * py).normalize();
 
         Ray::new(eye, direction)
+    }
+
+    pub fn project(&self, point: Vec3, width: usize, height: usize) -> Option<(i32, i32)> {
+        let eye = self.position();
+
+        let forward = (self.target - eye).normalize();
+
+        let right = forward.cross(&Vec3::new(0.0, 1.0, 0.0)).normalize();
+
+        let up = right.cross(&forward).normalize();
+
+        let relative = point - eye;
+
+        let camera_z = relative.dot(&forward);
+
+        if camera_z <= 0.01 {
+            return None;
+        }
+
+        let camera_x = relative.dot(&right);
+        let camera_y = relative.dot(&up);
+
+        let aspect = width as f32 / height as f32;
+        let fov_scale = (self.fov / 2.0).tan();
+
+        let ndc_x = camera_x / (camera_z * fov_scale * aspect);
+
+        let ndc_y = camera_y / (camera_z * fov_scale);
+
+        let screen_x = ((ndc_x + 1.0) * 0.5 * width as f32) as i32;
+
+        let screen_y = ((1.0 - ndc_y) * 0.5 * height as f32) as i32;
+
+        Some((screen_x, screen_y))
     }
 }
