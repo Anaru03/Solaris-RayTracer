@@ -52,26 +52,26 @@ impl Planet {
     pub fn voxel_cubes(&self) -> Vec<(Cube, u32)> {
         let mut cubes = Vec::new();
 
-        let resolution = 4;
+        let resolution = 3;
         let size = self.radius * 2.0 / resolution as f32;
-        let half = size * 0.52;
+        let half = size * 0.55;
 
         for x in -resolution..=resolution {
             for y in -resolution..=resolution {
                 for z in -resolution..=resolution {
                     let offset = Vec3::new(x as f32 * size, y as f32 * size, z as f32 * size);
 
-                    let distance = offset.length();
+                    if offset.length() <= self.radius {
+                        let cube_center = self.position + offset;
 
-                    if distance <= self.radius && distance >= self.radius * 0.50 {
-                        let center = self.position + offset;
+                        let color = self.voxel_color(x, y, z);
 
                         cubes.push((
                             Cube::new(
-                                center - Vec3::new(half, half, half),
-                                center + Vec3::new(half, half, half),
+                                cube_center - Vec3::new(half, half, half),
+                                cube_center + Vec3::new(half, half, half),
                             ),
-                            self.voxel_color(x, y, z),
+                            color,
                         ));
                     }
                 }
@@ -83,74 +83,100 @@ impl Planet {
 
     fn voxel_color(&self, x: i32, y: i32, z: i32) -> u32 {
         match self.name {
-            "Mercury" => match (x * 3 + y * 5 + z * 7).abs() % 8 {
-                0..=2 => rgb(90, 88, 84),
-                3..=4 => rgb(125, 120, 112),
-                _ => rgb(160, 155, 145),
-            },
-
-            "Venus" => match (x * 2 + y * 3 + z * 5).abs() % 7 {
-                0..=2 => rgb(225, 175, 85),
-                3..=4 => rgb(185, 120, 50),
-                _ => rgb(240, 205, 115),
-            },
-
-            "Earth" => {
-                if y >= 3 || y <= -3 {
-                    rgb(235, 240, 245)
+            "Mercury" => {
+                if (x + y + z).abs() % 3 == 0 {
+                    self.secondary_color
                 } else {
-                    let pattern = (x * 3 + z * 5 + y * 2).abs() % 11;
-
-                    if pattern <= 3 {
-                        rgb(45, 145, 65)
-                    } else if pattern == 4 {
-                        rgb(80, 175, 85)
-                    } else {
-                        rgb(25, 90, 195)
-                    }
+                    self.color
                 }
             }
 
-            "Mars" => match (x * 5 + y * 3 + z * 7).abs() % 9 {
-                0..=2 => rgb(105, 40, 28),
-                3..=4 => rgb(155, 55, 35),
-                _ => rgb(205, 75, 45),
-            },
+            "Venus" => {
+                if (x + z).abs() % 2 == 0 {
+                    self.secondary_color
+                } else {
+                    self.color
+                }
+            }
 
-            "Jupiter" => match y.rem_euclid(6) {
-                0 => rgb(235, 215, 180),
-                1 => rgb(205, 165, 125),
-                2 => rgb(150, 90, 60),
-                3 => rgb(225, 195, 155),
-                4 => rgb(180, 120, 80),
-                _ => rgb(240, 220, 190),
-            },
+            "Earth" => {
+                if y >= 2 || y <= -2 {
+                    rgb(225, 235, 240)
+                } else if (x + z * 2 + y).abs() % 4 == 0 || (x - z).abs() % 5 == 0 {
+                    rgb(45, 145, 70)
+                } else {
+                    self.color
+                }
+            }
 
-            "Saturn" => match y.rem_euclid(4) {
-                0 => rgb(235, 215, 155),
-                1 => rgb(205, 180, 120),
-                2 => rgb(245, 225, 170),
-                _ => rgb(190, 165, 105),
-            },
+            "Mars" => {
+                if (x * 2 + y + z).abs() % 4 == 0 {
+                    self.secondary_color
+                } else {
+                    self.color
+                }
+            }
+
+            "Jupiter" => {
+                if y % 3 == 0 {
+                    rgb(225, 190, 145)
+                } else if y % 2 == 0 {
+                    rgb(165, 105, 70)
+                } else {
+                    self.color
+                }
+            }
+
+            "Saturn" => {
+                if y % 2 == 0 {
+                    self.secondary_color
+                } else {
+                    self.color
+                }
+            }
 
             "Uranus" => {
-                if (x + y * 2 + z).abs() % 5 <= 1 {
-                    rgb(155, 225, 230)
+                if y.abs() % 2 == 0 {
+                    self.secondary_color
                 } else {
-                    rgb(90, 185, 205)
+                    self.color
                 }
             }
 
             "Neptune" => {
-                if (x + y * 3 + z * 2).abs() % 7 <= 1 {
-                    rgb(75, 120, 235)
+                if (x + y + z).abs() % 4 == 0 {
+                    self.secondary_color
                 } else {
-                    rgb(35, 65, 180)
+                    self.color
                 }
             }
 
             _ => self.color,
         }
+    }
+
+    pub fn orbit_cubes(&self) -> Vec<Cube> {
+        let mut cubes = Vec::new();
+
+        let segments = 72;
+        let size = 0.035;
+
+        for i in 0..segments {
+            let angle = i as f32 / segments as f32 * std::f32::consts::TAU;
+
+            let center = Vec3::new(
+                self.orbit_radius * angle.cos(),
+                -0.08,
+                self.orbit_radius * angle.sin(),
+            );
+
+            cubes.push(Cube::new(
+                center - Vec3::new(size, size, size),
+                center + Vec3::new(size, size, size),
+            ));
+        }
+
+        cubes
     }
 }
 
