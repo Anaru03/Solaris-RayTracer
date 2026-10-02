@@ -1,71 +1,59 @@
 use crate::ray::Ray;
 use crate::vector::Vec3;
-use std::f32::consts::PI;
-
-const PITCH_LIMIT: f32 = PI / 2.0 - 0.1;
 
 pub struct Camera {
-    pub eye: Vec3,
-    pub center: Vec3,
-    pub up: Vec3,
+    pub target: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
     pub fov: f32,
 }
 
 impl Camera {
-    pub fn new(eye: Vec3, center: Vec3, up: Vec3, fov: f32) -> Self {
+    pub fn new(target: Vec3, distance: f32) -> Self {
         Self {
-            eye,
-            center,
-            up,
-            fov,
+            target,
+            yaw: 0.8,
+            pitch: 0.45,
+            distance,
+            fov: 60.0_f32.to_radians(),
         }
     }
 
-    pub fn basis_change(&self, vector: &Vec3) -> Vec3 {
-        let forward = (self.center - self.eye).normalize();
-        let right = forward.cross(&self.up).normalize();
-        let up = right.cross(&forward).normalize();
-
-        let rotated = right * vector.x + up * vector.y - forward * vector.z;
-
-        rotated.normalize()
+    pub fn position(&self) -> Vec3 {
+        Vec3::new(
+            self.target.x + self.distance * self.pitch.cos() * self.yaw.cos(),
+            self.target.y + self.distance * self.pitch.sin(),
+            self.target.z + self.distance * self.pitch.cos() * self.yaw.sin(),
+        )
     }
 
-    pub fn orbit(&mut self, delta_yaw: f32, delta_pitch: f32) {
-        let radius_vector = self.eye - self.center;
-        let radius = radius_vector.length();
+    pub fn orbit(&mut self, yaw: f32, pitch: f32) {
+        self.yaw += yaw;
+        self.pitch += pitch;
 
-        let current_yaw = radius_vector.z.atan2(radius_vector.x);
+        self.pitch = self.pitch.clamp(-1.3, 1.3);
+    }
 
-        let radius_xz =
-            (radius_vector.x * radius_vector.x + radius_vector.z * radius_vector.z).sqrt();
-
-        let current_pitch = (-radius_vector.y).atan2(radius_xz);
-
-        let new_yaw = (current_yaw + delta_yaw) % (2.0 * PI);
-
-        let new_pitch = (current_pitch + delta_pitch).clamp(-PITCH_LIMIT, PITCH_LIMIT);
-
-        self.eye = self.center
-            + Vec3::new(
-                radius * new_yaw.cos() * new_pitch.cos(),
-                -radius * new_pitch.sin(),
-                radius * new_yaw.sin() * new_pitch.cos(),
-            );
+    pub fn zoom(&mut self, amount: f32) {
+        self.distance = (self.distance + amount).clamp(3.0, 45.0);
     }
 
     pub fn get_ray(&self, x: usize, y: usize, width: usize, height: usize) -> Ray {
-        let aspect_ratio = width as f32 / height as f32;
-        let fov_scale = (self.fov / 2.0).tan();
+        let eye = self.position();
 
-        let pixel_x = (2.0 * (x as f32 + 0.5) / width as f32 - 1.0) * aspect_ratio * fov_scale;
+        let forward = (self.target - eye).normalize();
+        let right = forward.cross(&Vec3::new(0.0, 1.0, 0.0)).normalize();
+        let up = right.cross(&forward).normalize();
 
-        let pixel_y = (1.0 - 2.0 * (y as f32 + 0.5) / height as f32) * fov_scale;
+        let aspect = width as f32 / height as f32;
 
-        let camera_direction = Vec3::new(pixel_x, pixel_y, -1.0).normalize();
+        let px = (2.0 * (x as f32 + 0.5) / width as f32 - 1.0) * aspect * (self.fov / 2.0).tan();
 
-        let world_direction = self.basis_change(&camera_direction);
+        let py = (1.0 - 2.0 * (y as f32 + 0.5) / height as f32) * (self.fov / 2.0).tan();
 
-        Ray::new(self.eye, world_direction)
+        let direction = (forward + right * px + up * py).normalize();
+
+        Ray::new(eye, direction)
     }
 }

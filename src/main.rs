@@ -1,161 +1,75 @@
-mod bmp;
 mod camera;
-mod cube;
-mod cylinder;
 mod framebuffer;
-mod light;
-mod material;
+mod planet;
 mod ray;
-mod scene;
 mod sphere;
 mod vector;
 
 use camera::Camera;
 use framebuffer::{Framebuffer, rgb};
-use light::Light;
 use minifb::{Key, Scale, Window, WindowOptions};
-use ray::Ray;
-use scene::{SceneObject, build_scene};
+use planet::{Planet, create_planets};
+use sphere::Sphere;
+use std::time::Instant;
 use vector::Vec3;
 
-const WIDTH: usize = 320;
-const HEIGHT: usize = 240;
+const WIDTH: usize = 400;
+const HEIGHT: usize = 300;
 
-const ROTATION_SPEED: f32 = 0.05;
-const SHADOW_BIAS: f32 = 0.001;
-const REFLECTION_BIAS: f32 = 0.001;
-const MAX_DEPTH: u32 = 2;
+fn shade(sphere: &Sphere, point: Vec3, base_color: u32, sun_position: Vec3) -> u32 {
+    let normal = sphere.normal_at(point);
 
-fn cast_shadow(point: Vec3, normal: Vec3, light: &Light, objects: &[SceneObject]) -> bool {
-    let shadow_origin = point + normal * SHADOW_BIAS;
+    let light_direction = (sun_position - point).normalize();
 
-    let to_light = light.position - shadow_origin;
-    let light_distance = to_light.length();
-    let light_direction = to_light.normalize();
+    let diffuse = normal.dot(&light_direction).max(0.0);
 
-    let shadow_ray = Ray::new(shadow_origin, light_direction);
+    let brightness = (0.12 + diffuse * 0.88).min(1.0);
 
-    for object in objects {
-        if let Some(t) = object.intersect(&shadow_ray) {
-            if t > 0.0 && t < light_distance {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn trace_ray(
-    ray: &Ray,
-    camera: &Camera,
-    objects: &[SceneObject],
-    light: &Light,
-    depth: u32,
-) -> u32 {
-    let background = rgb(15, 18, 24);
-
-    let mut closest_t = f32::INFINITY;
-    let mut closest_object: Option<&SceneObject> = None;
-
-    for object in objects {
-        if let Some(t) = object.intersect(ray) {
-            if t < closest_t {
-                closest_t = t;
-                closest_object = Some(object);
-            }
-        }
-    }
-
-    let Some(object) = closest_object else {
-        return background;
-    };
-
-    let hit_point = ray.at(closest_t);
-    let normal = object.normal_at(hit_point);
-
-    let in_shadow = cast_shadow(hit_point, normal, light, objects);
-
-    let diffuse_light = if in_shadow {
-        0.0
-    } else {
-        light.illuminate(hit_point, normal)
-    };
-
-    let specular_light = if in_shadow {
-        0.0
-    } else {
-        let light_direction = (light.position - hit_point).normalize();
-
-        let view_direction = (camera.eye - hit_point).normalize();
-
-        let reflected = (light_direction * -1.0).reflect(&normal);
-
-        view_direction
-            .dot(&reflected)
-            .max(0.0)
-            .powf(object.material.shininess)
-            * object.material.specular
-            * light.intensity
-    };
-
-    let brightness = (object.material.ambient + diffuse_light * object.material.diffuse).min(1.0);
-
-    let color = object.material.color;
-
-    let base_r = ((color >> 16) & 255) as f32;
-    let base_g = ((color >> 8) & 255) as f32;
-    let base_b = (color & 255) as f32;
-
-    let local_r = (base_r * brightness + 255.0 * specular_light).min(255.0);
-
-    let local_g = (base_g * brightness + 255.0 * specular_light).min(255.0);
-
-    let local_b = (base_b * brightness + 255.0 * specular_light).min(255.0);
-
-    let reflectivity = object.material.reflectivity;
-
-    if depth >= MAX_DEPTH || reflectivity <= 0.0 {
-        return rgb(local_r as u32, local_g as u32, local_b as u32);
-    }
-
-    let reflection_direction = ray.direction.reflect(&normal).normalize();
-
-    let reflection_origin = hit_point + normal * REFLECTION_BIAS;
-
-    let reflection_ray = Ray::new(reflection_origin, reflection_direction);
-
-    let reflected_color = trace_ray(&reflection_ray, camera, objects, light, depth + 1);
-
-    let reflected_r = ((reflected_color >> 16) & 255) as f32;
-
-    let reflected_g = ((reflected_color >> 8) & 255) as f32;
-
-    let reflected_b = (reflected_color & 255) as f32;
-
-    let final_r = local_r * (1.0 - reflectivity) + reflected_r * reflectivity;
-
-    let final_g = local_g * (1.0 - reflectivity) + reflected_g * reflectivity;
-
-    let final_b = local_b * (1.0 - reflectivity) + reflected_b * reflectivity;
+    let r = ((base_color >> 16) & 255) as f32;
+    let g = ((base_color >> 8) & 255) as f32;
+    let b = (base_color & 255) as f32;
 
     rgb(
-        final_r.min(255.0) as u32,
-        final_g.min(255.0) as u32,
-        final_b.min(255.0) as u32,
+        (r * brightness) as u32,
+        (g * brightness) as u32,
+        (b * brightness) as u32,
     )
 }
 
-fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[SceneObject], light: &Light) {
-    framebuffer.clear(rgb(15, 18, 24));
+fn render(framebuffer: &mut Framebuffer, camera: &Camera, planets: &[Planet]) {
+    let background = rgb(2, 3, 10);
+
+    framebuffer.clear(background);
+
+    let sun = Sphere::new(Vec3::new(0.0, 0.0, 0.0), 1.2);
 
     for y in 0..HEIGHT {
         for x in 0..WIDTH {
             let ray = camera.get_ray(x, y, WIDTH, HEIGHT);
 
-            let color = trace_ray(&ray, camera, objects, light, 0);
+            let mut closest_t = f32::INFINITY;
+            let mut color = background;
 
-            framebuffer.set_pixel(x, y, color);
+            if let Some(t) = sun.intersect(&ray) {
+                closest_t = t;
+                color = rgb(255, 185, 35);
+            }
+
+            for planet in planets {
+                let sphere = planet.sphere();
+
+                if let Some(t) = sphere.intersect(&ray) {
+                    if t < closest_t {
+                        closest_t = t;
+
+                        let point = ray.at(t);
+
+                        color = shade(&sphere, point, planet.color, Vec3::new(0.0, 0.0, 0.0));
+                    }
+                }
+            }
+
+            framebuffer.set_pixel(x, y, WIDTH, color);
         }
     }
 }
@@ -163,52 +77,59 @@ fn render(framebuffer: &mut Framebuffer, camera: &Camera, objects: &[SceneObject
 fn main() {
     let mut framebuffer = Framebuffer::new(WIDTH, HEIGHT);
 
-    let objects = build_scene();
+    let mut planets = create_planets();
 
-    let light = Light::new(Vec3::new(-5.0, 4.5, 1.5), 1.25);
-
-    let mut camera = Camera::new(
-        Vec3::new(7.5, 4.5, 7.0),
-        Vec3::new(0.0, 0.4, -3.5),
-        Vec3::new(0.0, 1.0, 0.0),
-        60.0_f32.to_radians(),
-    );
+    let mut camera = Camera::new(Vec3::new(0.0, 0.0, 0.0), 22.0);
 
     let mut window = Window::new(
-        "TRACE//404: The Last Debug | Flechas: camara orbital | ESC: salir",
+        "Solar System Raytracer",
         WIDTH,
         HEIGHT,
         WindowOptions {
-            resize: false,
             scale: Scale::X2,
             ..WindowOptions::default()
         },
     )
     .expect("No se pudo crear la ventana");
 
-    let mut needs_render = true;
+    let mut last_time = Instant::now();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
-        let orbit_controls = [
-            (Key::Left, ROTATION_SPEED, 0.0),
-            (Key::Right, -ROTATION_SPEED, 0.0),
-            (Key::Up, 0.0, -ROTATION_SPEED),
-            (Key::Down, 0.0, ROTATION_SPEED),
-        ];
+        let now = Instant::now();
 
-        for (key, delta_yaw, delta_pitch) in orbit_controls {
-            if window.is_key_down(key) {
-                camera.orbit(delta_yaw, delta_pitch);
+        let dt = now.duration_since(last_time).as_secs_f32();
 
-                needs_render = true;
-            }
+        last_time = now;
+
+        for planet in &mut planets {
+            planet.update(dt);
         }
 
-        if needs_render {
-            render(&mut framebuffer, &camera, &objects, &light);
-
-            needs_render = false;
+        if window.is_key_down(Key::Left) {
+            camera.orbit(0.03, 0.0);
         }
+
+        if window.is_key_down(Key::Right) {
+            camera.orbit(-0.03, 0.0);
+        }
+
+        if window.is_key_down(Key::Up) {
+            camera.orbit(0.0, 0.03);
+        }
+
+        if window.is_key_down(Key::Down) {
+            camera.orbit(0.0, -0.03);
+        }
+
+        if window.is_key_down(Key::W) {
+            camera.zoom(-0.25);
+        }
+
+        if window.is_key_down(Key::S) {
+            camera.zoom(0.25);
+        }
+
+        render(&mut framebuffer, &camera, &planets);
 
         window
             .update_with_buffer(&framebuffer.buffer, WIDTH, HEIGHT)

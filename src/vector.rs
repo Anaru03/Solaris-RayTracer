@@ -19,11 +19,7 @@ impl Vec3 {
     pub fn normalize(&self) -> Self {
         let length = self.length();
 
-        if length == 0.0 {
-            return *self;
-        }
-
-        *self / length
+        if length == 0.0 { *self } else { *self / length }
     }
 
     pub fn dot(&self, other: &Self) -> f32 {
@@ -36,10 +32,6 @@ impl Vec3 {
             self.z * other.x - self.x * other.z,
             self.x * other.y - self.y * other.x,
         )
-    }
-
-    pub fn reflect(&self, normal: &Self) -> Self {
-        *self - *normal * (2.0 * self.dot(normal))
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::ray::Ray;
 use crate::vector::Vec3;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct Sphere {
     pub center: Vec3,
     pub radius: f32,
@@ -25,10 +25,10 @@ impl Sphere {
             return None;
         }
 
-        let sqrt_d = discriminant.sqrt();
+        let root = discriminant.sqrt();
 
-        let t1 = (-b - sqrt_d) / (2.0 * a);
-        let t2 = (-b + sqrt_d) / (2.0 * a);
+        let t1 = (-b - root) / (2.0 * a);
+        let t2 = (-b + root) / (2.0 * a);
 
         if t1 > 0.001 {
             Some(t1)
