@@ -76,7 +76,7 @@ cargo run --release
 
 <!-- Agregar aquí el video final del diorama -->
 
-**Video:** próximamente.
+**Video:** [Ver video en YouTube](https://youtu.be/0MG1Mqkkasg?si=vrEo9Ime_c2HsV2z)
 
 ---
 
