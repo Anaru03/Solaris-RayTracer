@@ -11,8 +11,10 @@ mod vector;
 use camera::Camera;
 use cube::Cube;
 use framebuffer::{Framebuffer, rgb};
+use material::Material;
 use minifb::{Key, KeyRepeat, MouseButton, MouseMode, Scale, Window, WindowOptions};
 use planet::{Planet, create_planets};
+use ray::Ray;
 use sphere::Sphere;
 use std::f32::consts::PI;
 use std::time::Instant;
@@ -21,48 +23,119 @@ use vector::Vec3;
 
 const WIDTH: usize = 280;
 const HEIGHT: usize = 210;
-
 const UI_HEIGHT: usize = 40;
 const SCENE_HEIGHT: usize = HEIGHT - UI_HEIGHT;
-
 const MENU_ITEMS: usize = 9;
+const EPSILON: f32 = 0.002;
 
-fn multiply_color(color: u32, brightness: f32) -> u32 {
+fn multiply_color(color: u32, factor: f32) -> u32 {
     let r = ((color >> 16) & 255) as f32;
-
     let g = ((color >> 8) & 255) as f32;
-
     let b = (color & 255) as f32;
 
     rgb(
-        (r * brightness).clamp(0.0, 255.0) as u32,
-        (g * brightness).clamp(0.0, 255.0) as u32,
-        (b * brightness).clamp(0.0, 255.0) as u32,
+        (r * factor).clamp(0.0, 255.0) as u32,
+        (g * factor).clamp(0.0, 255.0) as u32,
+        (b * factor).clamp(0.0, 255.0) as u32,
     )
 }
 
-fn shade_sphere(sphere: &Sphere, point: Vec3, base_color: u32, sun_position: Vec3) -> u32 {
-    let normal = sphere.normal_at(point);
+fn add_colors(a: u32, b: u32) -> u32 {
+    let ar = (a >> 16) & 255;
+    let ag = (a >> 8) & 255;
+    let ab = a & 255;
 
-    let light_direction = (sun_position - point).normalize();
+    let br = (b >> 16) & 255;
+    let bg = (b >> 8) & 255;
+    let bb = b & 255;
 
-    let diffuse = normal.dot(&light_direction).max(0.0);
-
-    let brightness = (0.12 + diffuse * 0.88).min(1.0);
-
-    multiply_color(base_color, brightness)
+    rgb((ar + br).min(255), (ag + bg).min(255), (ab + bb).min(255))
 }
 
-fn shade_cube(cube: &Cube, point: Vec3, base_color: u32, sun_position: Vec3) -> u32 {
-    let normal = cube.normal_at(point);
+fn blend_colors(a: u32, b: u32, amount: f32) -> u32 {
+    let amount = amount.clamp(0.0, 1.0);
+    let inverse = 1.0 - amount;
 
-    let light_direction = (sun_position - point).normalize();
+    let ar = ((a >> 16) & 255) as f32;
+    let ag = ((a >> 8) & 255) as f32;
+    let ab = (a & 255) as f32;
 
-    let diffuse = normal.dot(&light_direction).max(0.0);
+    let br = ((b >> 16) & 255) as f32;
+    let bg = ((b >> 8) & 255) as f32;
+    let bb = (b & 255) as f32;
 
-    let brightness = (0.18 + diffuse * 0.82).min(1.0);
+    rgb(
+        (ar * inverse + br * amount).clamp(0.0, 255.0) as u32,
+        (ag * inverse + bg * amount).clamp(0.0, 255.0) as u32,
+        (ab * inverse + bb * amount).clamp(0.0, 255.0) as u32,
+    )
+}
 
-    multiply_color(base_color, brightness)
+fn hash3(x: i32, y: i32, z: i32) -> u32 {
+    let mut n = x as u32;
+
+    n = n.wrapping_mul(374761393);
+    n = n.wrapping_add((y as u32).wrapping_mul(668265263));
+    n = n.wrapping_add((z as u32).wrapping_mul(2246822519));
+
+    n ^= n >> 13;
+    n = n.wrapping_mul(1274126177);
+
+    n ^ (n >> 16)
+}
+
+fn skybox_color(direction: Vec3) -> u32 {
+    let d = direction.normalize();
+
+    let vertical = ((d.y + 1.0) * 0.5).clamp(0.0, 1.0);
+
+    let mut r = 2.0 + vertical * 3.0;
+    let mut g = 4.0 + vertical * 5.0;
+    let mut b = 12.0 + vertical * 14.0;
+
+    let nebula_a = (d.x * 3.2 + d.z * 2.1).sin() * 0.5 + 0.5;
+
+    let nebula_b = (d.y * 4.0 - d.z).cos() * 0.5 + 0.5;
+
+    let nebula = nebula_a * nebula_b;
+
+    if nebula > 0.70 {
+        let strength = (nebula - 0.70) / 0.30;
+
+        r += 8.0 * strength;
+        g += 3.0 * strength;
+        b += 18.0 * strength;
+    }
+
+    let sx = (d.x * 900.0).floor() as i32;
+
+    let sy = (d.y * 900.0).floor() as i32;
+
+    let sz = (d.z * 900.0).floor() as i32;
+
+    let hash = hash3(sx, sy, sz);
+
+    if hash % 997 < 3 {
+        let brightness = 170 + (hash % 86);
+
+        return rgb(brightness, brightness, (brightness + 15).min(255));
+    }
+
+    let hash_large = hash3(
+        (d.x * 300.0).floor() as i32,
+        (d.y * 300.0).floor() as i32,
+        (d.z * 300.0).floor() as i32,
+    );
+
+    if hash_large % 4093 == 0 {
+        return rgb(220, 230, 255);
+    }
+
+    rgb(
+        r.clamp(0.0, 255.0) as u32,
+        g.clamp(0.0, 255.0) as u32,
+        b.clamp(0.0, 255.0) as u32,
+    )
 }
 
 fn sphere_texture_color(sphere: &Sphere, point: Vec3, texture: &Texture) -> u32 {
@@ -72,23 +145,175 @@ fn sphere_texture_color(sphere: &Sphere, point: Vec3, texture: &Texture) -> u32 
 
     let v = 0.5 - normal.y.asin() / PI;
 
-    let sample = texture.sample(u, v);
+    texture.sample(u, v)
+}
 
-    let r = ((sample >> 16) & 255) as f32;
+fn planet_texture_color(planet: &Planet, hit_point: Vec3, texture: &Texture) -> u32 {
+    let local = hit_point - planet.position;
 
-    let g = ((sample >> 8) & 255) as f32;
+    let diameter = planet.radius * 2.45;
 
-    let b = (sample & 255) as f32;
+    let u = 0.5 + local.x / diameter;
 
-    let luminance = (r + g + b) / (255.0 * 3.0);
+    let v = 0.5 - local.y / diameter;
 
-    let factor = 0.75 + luminance * 0.35;
+    let sampled = texture.sample(u, v);
 
-    rgb(
-        (255.0 * factor).clamp(0.0, 255.0) as u32,
-        (135.0 * factor).clamp(0.0, 255.0) as u32,
-        (25.0 * factor).clamp(0.0, 255.0) as u32,
-    )
+    let r = (sampled >> 16) & 255;
+
+    let g = (sampled >> 8) & 255;
+
+    let b = sampled & 255;
+
+    if r + g + b < 18 {
+        planet.color
+    } else {
+        sampled
+    }
+}
+
+fn shade_material(
+    cube: &Cube,
+    point: Vec3,
+    texture_color: u32,
+    material: Material,
+    camera_position: Vec3,
+    sun_position: Vec3,
+) -> u32 {
+    let normal = cube.normal_at(point);
+
+    let light_direction = (sun_position - point).normalize();
+
+    let view_direction = (camera_position - point).normalize();
+
+    let diffuse = normal.dot(&light_direction).max(0.0);
+
+    let ambient = 0.16;
+
+    let diffuse_light = ambient + diffuse * material.albedo * 0.84;
+
+    let diffuse_color = multiply_color(texture_color, diffuse_light);
+
+    let light_dot_normal = light_direction.dot(&normal);
+
+    let reflected_light = normal * (2.0 * light_dot_normal) - light_direction;
+
+    let specular_angle = reflected_light.normalize().dot(&view_direction).max(0.0);
+
+    let specular_strength = specular_angle.powf(24.0) * material.specular;
+
+    let specular_color = multiply_color(rgb(255, 245, 220), specular_strength);
+
+    add_colors(diffuse_color, specular_color)
+}
+
+fn shade_moon(sphere: &Sphere, point: Vec3, base_color: u32, sun_position: Vec3) -> u32 {
+    let normal = sphere.normal_at(point);
+
+    let light_direction = (sun_position - point).normalize();
+
+    let diffuse = normal.dot(&light_direction).max(0.0);
+
+    let brightness = 0.15 + diffuse * 0.85;
+
+    multiply_color(base_color, brightness)
+}
+
+fn reflected_direction(incoming: Vec3, normal: Vec3) -> Vec3 {
+    (incoming - normal * (2.0 * incoming.dot(&normal))).normalize()
+}
+
+fn refracted_direction(incoming: Vec3, normal: Vec3, refractive_index: f32) -> Option<Vec3> {
+    let mut n = normal;
+
+    let mut eta_i = 1.0;
+
+    let mut eta_t = refractive_index.max(1.0001);
+
+    let mut cos_i = incoming.dot(&n).clamp(-1.0, 1.0);
+
+    if cos_i > 0.0 {
+        std::mem::swap(&mut eta_i, &mut eta_t);
+
+        n = n * -1.0;
+    } else {
+        cos_i = -cos_i;
+    }
+
+    let eta = eta_i / eta_t;
+
+    let k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+
+    if k < 0.0 {
+        None
+    } else {
+        Some((incoming * eta + n * (eta * cos_i - k.sqrt())).normalize())
+    }
+}
+
+fn ray_hits_planet_bounds(ray: &Ray, planet: &Planet) -> bool {
+    let oc = ray.origin - planet.position;
+
+    let radius = if planet.name == "Saturn" {
+        planet.radius * 2.55
+    } else {
+        planet.radius * 1.30
+    };
+
+    let a = ray.direction.dot(&ray.direction);
+
+    let b = 2.0 * oc.dot(&ray.direction);
+
+    let c = oc.dot(&oc) - radius * radius;
+
+    let discriminant = b * b - 4.0 * a * c;
+
+    discriminant >= 0.0
+}
+
+fn trace_secondary(
+    origin: Vec3,
+    direction: Vec3,
+    planets: &[Planet],
+    planet_cubes: &[Vec<Cube>],
+    textures: &[Texture],
+    sun: &Sphere,
+) -> u32 {
+    let ray = Ray::new(origin, direction);
+
+    let mut closest_t = f32::INFINITY;
+
+    let mut color = skybox_color(direction);
+
+    if let Some(t) = sun.intersect(&ray) {
+        if t > EPSILON && t < closest_t {
+            closest_t = t;
+
+            color = sphere_texture_color(sun, ray.at(t), &textures[0]);
+        }
+    }
+
+    for (planet_index, cubes) in planet_cubes.iter().enumerate() {
+        let planet = &planets[planet_index];
+
+        if !ray_hits_planet_bounds(&ray, planet) {
+            continue;
+        }
+
+        for cube in cubes {
+            if let Some(t) = cube.intersect(&ray) {
+                if t > EPSILON && t < closest_t {
+                    closest_t = t;
+
+                    let point = ray.at(t);
+
+                    color = planet_texture_color(planet, point, &textures[planet_index + 1]);
+                }
+            }
+        }
+    }
+
+    color
 }
 
 fn target_camera_distance(index: usize) -> f32 {
@@ -208,34 +433,6 @@ fn draw_rect(
     }
 }
 
-fn average_texture_color(texture: &Texture) -> u32 {
-    let samples = [
-        (0.15, 0.30),
-        (0.35, 0.50),
-        (0.55, 0.40),
-        (0.75, 0.60),
-        (0.90, 0.50),
-    ];
-
-    let mut r = 0u32;
-    let mut g = 0u32;
-    let mut b = 0u32;
-
-    for (u, v) in samples {
-        let color = texture.sample(u, v);
-
-        r += (color >> 16) & 255;
-
-        g += (color >> 8) & 255;
-
-        b += color & 255;
-    }
-
-    let count = samples.len() as u32;
-
-    rgb(r / count, g / count, b / count)
-}
-
 fn glyph(c: char) -> [&'static str; 5] {
     match c {
         'A' => ["010", "101", "111", "101", "101"],
@@ -271,8 +468,46 @@ fn draw_text(framebuffer: &mut Framebuffer, x: usize, y: usize, text: &str, colo
     for character in text.chars() {
         draw_char(framebuffer, cursor, y, character, color);
 
-        // 3 px de letra + 1 de separación.
         cursor += 4;
+    }
+}
+
+fn draw_texture_thumbnail(
+    framebuffer: &mut Framebuffer,
+    texture: &Texture,
+    center_x: usize,
+    center_y: usize,
+    width: usize,
+    height: usize,
+) {
+    let start_x = center_x.saturating_sub(width / 2);
+
+    let start_y = center_y.saturating_sub(height / 2);
+
+    for dy in 0..height {
+        for dx in 0..width {
+            let u = dx as f32 / width as f32;
+
+            let v = dy as f32 / height as f32;
+
+            let color = texture.sample(u, v);
+
+            let r = (color >> 16) & 255;
+
+            let g = (color >> 8) & 255;
+
+            let b = color & 255;
+
+            if r + g + b > 15 {
+                let px = start_x + dx;
+
+                let py = start_y + dy;
+
+                if px < WIDTH && py < HEIGHT {
+                    framebuffer.set_pixel(px, py, WIDTH, color);
+                }
+            }
+        }
     }
 }
 
@@ -286,7 +521,6 @@ fn draw_ui(framebuffer: &mut Framebuffer, textures: &[Texture], selected: Option
         rgb(8, 10, 20),
     );
 
-    // Línea superior del panel.
     draw_rect(framebuffer, 0, SCENE_HEIGHT, WIDTH, 1, rgb(80, 100, 160));
 
     let names = [
@@ -298,9 +532,9 @@ fn draw_ui(framebuffer: &mut Framebuffer, textures: &[Texture], selected: Option
     for index in 0..MENU_ITEMS {
         let x = index * button_width;
 
-        let is_selected = selected == Some(index);
+        let selected_now = selected == Some(index);
 
-        let background = if is_selected {
+        let background = if selected_now {
             rgb(55, 65, 100)
         } else {
             rgb(18, 22, 38)
@@ -315,74 +549,30 @@ fn draw_ui(framebuffer: &mut Framebuffer, textures: &[Texture], selected: Option
             background,
         );
 
-        let cx = x + button_width / 2;
+        let center_x = x + button_width / 2;
 
-        // Dejamos la parte inferior para texto.
-        let planet_y = SCENE_HEIGHT + 15;
+        let center_y = SCENE_HEIGHT + 14;
 
-        let size = match index {
-            0 => 5, // Sol
-            5 => 6, // Júpiter
-            6 => 5, // Saturno
-            7 | 8 => 4,
-            _ => 3,
-        };
+        let thumb_width = if index == 6 { 25 } else { 20 };
 
-        let planet_color = average_texture_color(&textures[index]);
-
-        draw_rect(
+        draw_texture_thumbnail(
             framebuffer,
-            cx.saturating_sub(size),
-            planet_y.saturating_sub(size),
-            size * 2,
-            size * 2,
-            planet_color,
+            &textures[index],
+            center_x,
+            center_y,
+            thumb_width,
+            20,
         );
-
-        // Tierra: detalle verde.
-        if index == 3 {
-            draw_rect(framebuffer, cx, planet_y - 2, 2, 3, rgb(45, 155, 70));
-        }
-
-        // Júpiter: banda.
-        if index == 5 {
-            draw_rect(
-                framebuffer,
-                cx.saturating_sub(size),
-                planet_y - 1,
-                size * 2,
-                2,
-                rgb(225, 190, 150),
-            );
-        }
-
-        // Saturno: anillo.
-        if index == 6 {
-            draw_rect(
-                framebuffer,
-                cx.saturating_sub(size + 5),
-                planet_y,
-                (size + 5) * 2,
-                1,
-                rgb(225, 200, 140),
-            );
-        }
-
-        // -------------------------
-        // NOMBRE
-        // -------------------------
 
         let name = names[index];
 
-        // Cada letra ocupa 4 píxeles.
-        // Tres letras = 11 píxeles reales.
         let text_width = name.len() * 4 - 1;
 
-        let text_x = cx.saturating_sub(text_width / 2);
+        let text_x = center_x.saturating_sub(text_width / 2);
 
-        let text_y = SCENE_HEIGHT + UI_HEIGHT - 10;
+        let text_y = SCENE_HEIGHT + UI_HEIGHT - 9;
 
-        let text_color = if is_selected {
+        let text_color = if selected_now {
             rgb(255, 255, 255)
         } else {
             rgb(165, 175, 195)
@@ -400,12 +590,6 @@ fn render(
     moon_angle: f32,
     selected: Option<usize>,
 ) {
-    let background = rgb(2, 3, 10);
-
-    framebuffer.clear(background);
-
-    draw_orbits(framebuffer, camera, planets);
-
     let sun_position = Vec3::new(0.0, 0.0, 0.0);
 
     let sun = Sphere::new(sun_position, 1.2);
@@ -414,15 +598,19 @@ fn render(
 
     let moon = Sphere::new(moon_position, 0.14);
 
-    // textures[0] = Sol
-    // textures[1] = Mercurio
-    // ...
-    // textures[8] = Neptuno
-    let planet_cubes: Vec<Vec<(Cube, u32)>> = planets
-        .iter()
-        .enumerate()
-        .map(|(index, planet)| planet.voxel_cubes(&textures[index + 1]))
-        .collect();
+    let planet_cubes: Vec<Vec<Cube>> = planets.iter().map(|planet| planet.voxel_cubes()).collect();
+
+    let camera_position = camera.position();
+
+    for y in 0..SCENE_HEIGHT {
+        for x in 0..WIDTH {
+            let ray = camera.get_ray(x, y, WIDTH, SCENE_HEIGHT);
+
+            framebuffer.set_pixel(x, y, WIDTH, skybox_color(ray.direction));
+        }
+    }
+
+    draw_orbits(framebuffer, camera, planets);
 
     for y in 0..SCENE_HEIGHT {
         for x in 0..WIDTH {
@@ -432,41 +620,99 @@ fn render(
 
             let mut color = framebuffer.buffer[y * WIDTH + x];
 
-            // ==========================
-            // SOL TEXTURIZADO
-            // ==========================
-
             if let Some(t) = sun.intersect(&ray) {
                 closest_t = t;
 
-                let point = ray.at(t);
-
-                color = sphere_texture_color(&sun, point, &textures[0]);
+                color = sphere_texture_color(&sun, ray.at(t), &textures[0]);
             }
 
-            // ==========================
-            // PLANETAS TEXTURIZADOS
-            // ==========================
+            for (planet_index, cubes) in planet_cubes.iter().enumerate() {
+                let planet = &planets[planet_index];
 
-            for cubes in &planet_cubes {
-                for (cube, texture_color) in cubes {
+                if !ray_hits_planet_bounds(&ray, planet) {
+                    continue;
+                }
+
+                let texture = &textures[planet_index + 1];
+
+                for cube in cubes {
                     if let Some(t) = cube.intersect(&ray) {
                         if t < closest_t {
                             closest_t = t;
 
-                            color = shade_cube(cube, ray.at(t), *texture_color, sun_position);
+                            let point = ray.at(t);
+
+                            let texture_color = planet_texture_color(planet, point, texture);
+
+                            let mut surface_color = shade_material(
+                                cube,
+                                point,
+                                texture_color,
+                                planet.material,
+                                camera_position,
+                                sun_position,
+                            );
+
+                            let normal = cube.normal_at(point);
+
+                            let incoming = ray.direction.normalize();
+
+                            if planet.material.reflectivity > 0.001 {
+                                let reflection_direction = reflected_direction(incoming, normal);
+
+                                let reflection_origin = point + normal * EPSILON;
+
+                                let reflected_color = trace_secondary(
+                                    reflection_origin,
+                                    reflection_direction,
+                                    planets,
+                                    &planet_cubes,
+                                    textures,
+                                    &sun,
+                                );
+
+                                surface_color = blend_colors(
+                                    surface_color,
+                                    reflected_color,
+                                    planet.material.reflectivity,
+                                );
+                            }
+
+                            if planet.material.transparency > 0.001 {
+                                if let Some(refraction_direction) = refracted_direction(
+                                    incoming,
+                                    normal,
+                                    planet.material.refractive_index,
+                                ) {
+                                    let refraction_origin =
+                                        point + refraction_direction * (EPSILON * 4.0);
+
+                                    let refracted_color = trace_secondary(
+                                        refraction_origin,
+                                        refraction_direction,
+                                        planets,
+                                        &planet_cubes,
+                                        textures,
+                                        &sun,
+                                    );
+
+                                    surface_color = blend_colors(
+                                        surface_color,
+                                        refracted_color,
+                                        planet.material.transparency,
+                                    );
+                                }
+                            }
+
+                            color = surface_color;
                         }
                     }
                 }
             }
 
-            // ==========================
-            // LUNA
-            // ==========================
-
             if let Some(t) = moon.intersect(&ray) {
                 if t < closest_t {
-                    color = shade_sphere(&moon, ray.at(t), rgb(175, 175, 165), sun_position);
+                    color = shade_moon(&moon, ray.at(t), rgb(180, 180, 175), sun_position);
                 }
             }
 
@@ -478,10 +724,6 @@ fn render(
 }
 
 fn main() {
-    // ==========================
-    // CARGA DE TEXTURAS
-    // ==========================
-
     let texture_paths = [
         "assets/textures/sun.bmp",
         "assets/textures/mercury.bmp",
@@ -522,7 +764,6 @@ fn main() {
         HEIGHT,
         WindowOptions {
             scale: Scale::X2,
-
             ..WindowOptions::default()
         },
     )
